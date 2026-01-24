@@ -446,6 +446,7 @@ private:
     
     double tiempoActual;        ///< Reloj de simulación (minutos)
     double duracionSimulacion;  ///< Duración total (480 min)
+    double tiempoFinalReal;     ///< Tiempo real de finalización de simulación
     int siguienteIdCliente;     ///< Contador de IDs
     double tasaLlegada;         ///< λ: clientes/minuto
     
@@ -455,7 +456,7 @@ private:
 public:
     /** @brief Constructor del simulador */
     SimulacionColas(double duracion = 480.0, double lambda = 3.0, unsigned int semilla = 42) 
-        : tiempoActual(0.0), duracionSimulacion(duracion), siguienteIdCliente(0), 
+        : tiempoActual(0.0), duracionSimulacion(duracion), tiempoFinalReal(0.0), siguienteIdCliente(0), 
           tasaLlegada(lambda), rng(semilla) {}
     
     /**
@@ -489,9 +490,11 @@ public:
      * @brief Ejecuta la simulación completa
      * 
      * Loop principal: extrae el evento, avanza el reloj y procesa el evento
+     * Las llegadas se detienen a los 480 minutos, pero se procesan todos los
+     * servicios en progreso para que los clientes se completen correctamente.
      */
     void ejecutar() {
-        while (!colaEventos.empty() && tiempoActual < duracionSimulacion) {
+        while (!colaEventos.empty()) {
             // Extrae el próximo evento
             Evento e = colaEventos.top();
             colaEventos.pop();
@@ -499,15 +502,19 @@ public:
             // Avanza el reloj
             tiempoActual = e.tiempo;
             
-            if (tiempoActual >= duracionSimulacion) break;
-            
             // Procesa el evento según el tipo
             if (e.tipo == LLEGADA) {
-                procesarLlegada();
+                // Solo procesar nuevas llegadas durante el período de llegadas
+                if (tiempoActual < duracionSimulacion) {
+                    procesarLlegada();
+                }
             } else if (e.tipo == FIN_SERVICIO) {
+                // Procesar todos los servicios en progreso, sin restricción de tiempo
                 procesarFinServicio(e);
             }
         }
+        // Guardar el tiempo real de finalización de la simulación
+        tiempoFinalReal = tiempoActual;
     }
     
     /**
@@ -526,12 +533,15 @@ public:
             return stats;
         }
         
-        // Calcula los tiempos promedio
+        // Calcula los tiempos promedio SOLO para clientes completados
         double sumaEspera = 0;
         double sumaSistema = 0;
         for (const auto& c : clientesCompletados) {
-            sumaEspera += c.tiempoEsperaTotal;
-            sumaSistema += c.getTiempoTotal();
+            // Asegurarse de que el cliente completó toda su ruta
+            if (c.indiceEstacionActual >= (int)c.estaciones.size()) {
+                sumaEspera += c.tiempoEsperaTotal;
+                sumaSistema += c.getTiempoTotal();
+            }
         }
         stats.tiempoEsperaPromedio = sumaEspera / stats.totalClientes;
         stats.tiempoSistemaPromedio = sumaSistema / stats.totalClientes;
@@ -539,15 +549,18 @@ public:
         // Calcula la varianza
         double sumaDiferenciasCuadradas = 0;
         for (const auto& c : clientesCompletados) {
-            double diferencia = c.tiempoEsperaTotal - stats.tiempoEsperaPromedio;
-            sumaDiferenciasCuadradas += diferencia * diferencia;
+            if (c.indiceEstacionActual >= (int)c.estaciones.size()) {
+                double diferencia = c.tiempoEsperaTotal - stats.tiempoEsperaPromedio;
+                sumaDiferenciasCuadradas += diferencia * diferencia;
+            }
         }
         stats.varianzaTiempoEspera = sumaDiferenciasCuadradas / stats.totalClientes;
         
-        // Calcula la utilización por estación
+        // Calcula la utilización por estación usando el tiempo real de simulación
         stats.utilizacionEstaciones.resize(NUM_ESTACIONES);
+        double tiempoSimulacion = tiempoFinalReal > 0 ? tiempoFinalReal : duracionSimulacion;
         for (int i = 0; i < NUM_ESTACIONES; i++) {
-            stats.utilizacionEstaciones[i] = estaciones[i].getUtilizacion(duracionSimulacion);
+            stats.utilizacionEstaciones[i] = estaciones[i].getUtilizacion(tiempoSimulacion);
         }
         
         return stats;
@@ -656,13 +669,13 @@ private:
         Cliente& c = clientes[idCliente];
         
         // Calcula el tiempo de espera en esta cola
+        // Nota: tiempoEntradaCola se establece en procesarLlegada o procesarFinServicio
         double tiempoEspera = tiempoActual - c.tiempoEntradaCola;
         c.tiempoEsperaTotal += tiempoEspera;
         
         // Genera el tiempo de servicio según distribución de la estación
-        // Multiplicado por el número de órdenes del cliente
-        double tiempoServicioBase = getTiempoServicio(idEstacion);
-        double tiempoServicio = tiempoServicioBase * c.numOrdenes;
+        // NO se multiplica por número de órdenes (cada orden es independiente en cada estación)
+        double tiempoServicio = getTiempoServicio(idEstacion);
         c.tiempoServicioTotal += tiempoServicio;
         
         // Programa el fin de servicio
@@ -715,32 +728,49 @@ Estadisticas ejecutarMultiplesReplicas(const ConfiguracionServidores& config,
                                        int numReplicas = 30) {
     vector<double> tiemposEspera;
     vector<double> tiemposSistema;
+    vector<int> totalClientesPorReplica;
     vector<vector<double>> utilizaciones(NUM_ESTACIONES);
     
     for (int i = 0; i < numReplicas; ++i) {
-        SimulacionColas sim(480.0, 3.0, 42 + i);
+        SimulacionColas sim(480.0, 1.5, 42 + i);  // Reducir tasa de llegada a 1.5 clientes/minuto
         sim.inicializar(config);
         sim.ejecutar();
         const Estadisticas stats = sim.getEstadisticas();
         
-        tiemposEspera.push_back(stats.getTiempoEsperaPromedio());
-        tiemposSistema.push_back(stats.getTiempoSistemaPromedio());
-        for (int j = 0; j < NUM_ESTACIONES; ++j) {
-            utilizaciones[j].push_back(stats.getUtilizacionEstaciones()[j]);
+        // Solo contar si hay clientes completados
+        if (stats.getTotalClientes() > 0) {
+            tiemposEspera.push_back(stats.getTiempoEsperaPromedio());
+            tiemposSistema.push_back(stats.getTiempoSistemaPromedio());
+            totalClientesPorReplica.push_back(stats.getTotalClientes());
+            for (int j = 0; j < NUM_ESTACIONES; ++j) {
+                utilizaciones[j].push_back(stats.getUtilizacionEstaciones()[j]);
+            }
         }
     }
     
+    // Si no hay réplicas válidas, retornar resultado vacío
+    int replicasValidas = tiemposEspera.size();
+    if (replicasValidas == 0) {
+        Estadisticas resultado;
+        resultado.inicializarPromedios(NUM_ESTACIONES);
+        return resultado;
+    }
+    
     double promedioEspera = 0.0, promedioSistema = 0.0;
+    int promedioClientes = 0;
     vector<double> promedioUtilizacion(NUM_ESTACIONES, 0.0);
     
     for (double v : tiemposEspera) promedioEspera += v;
     for (double v : tiemposSistema) promedioSistema += v;
-    promedioEspera /= numReplicas;
-    promedioSistema /= numReplicas;
+    for (int c : totalClientesPorReplica) promedioClientes += c;
+    
+    promedioEspera /= replicasValidas;
+    promedioSistema /= replicasValidas;
+    promedioClientes /= replicasValidas;
     
     for (int j = 0; j < NUM_ESTACIONES; ++j) {
         for (double u : utilizaciones[j]) promedioUtilizacion[j] += u;
-        promedioUtilizacion[j] /= numReplicas;
+        promedioUtilizacion[j] /= replicasValidas;
     }
     
     double varianza = 0.0;
@@ -748,13 +778,14 @@ Estadisticas ejecutarMultiplesReplicas(const ConfiguracionServidores& config,
         double d = v - promedioEspera;
         varianza += d * d;
     }
-    varianza /= numReplicas;
+    varianza /= replicasValidas;
     
     Estadisticas resultado;
     resultado.inicializarPromedios(NUM_ESTACIONES);
     resultado.setTiempoEsperaPromedio(promedioEspera);
     resultado.setTiempoSistemaPromedio(promedioSistema);
     resultado.setVarianzaTiempoEspera(varianza);
+    resultado.setTotalClientes(promedioClientes);
     for (int j = 0; j < NUM_ESTACIONES; ++j) {
         resultado.setUtilizacion(j, promedioUtilizacion[j]);
     }
