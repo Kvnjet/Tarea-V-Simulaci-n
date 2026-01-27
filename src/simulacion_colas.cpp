@@ -732,7 +732,7 @@ Estadisticas ejecutarMultiplesReplicas(const ConfiguracionServidores& config,
     vector<vector<double>> utilizaciones(NUM_ESTACIONES);
     
     for (int i = 0; i < numReplicas; ++i) {
-        SimulacionColas sim(480.0, 1.2, 42 + i);  // Tasa de llegada: 1.2 clientes/minuto
+        SimulacionColas sim(480.0, 0.8, 42 + i);  
         sim.inicializar(config);
         sim.ejecutar();
         const Estadisticas stats = sim.getEstadisticas();
