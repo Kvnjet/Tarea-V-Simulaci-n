@@ -241,6 +241,160 @@ def plot_sensitivity_curve(param_values, W_means, W_stds, param_name,
 # ========================================================================
 # ANÁLISIS DE SENSIBILIDAD
 # ========================================================================
+# Añade esta función al archivo analysis.py
+
+def sensitivity_analysis_configuration(config, config_name, base_stats, 
+                                      param_name, param_range, 
+                                      target_W_max=3.0, num_replicas=50,
+                                      output_folder='results/sensitivity'):
+    """
+    Analiza cuánto soporta una configuración específica ante cambios en un parámetro.
+    
+    Args:
+        config: Configuración base
+        config_name: Nombre identificador de la configuración
+        base_stats: Estadísticas base de la configuración
+        param_name: Nombre del parámetro a variar (ej: 'prob_chicken', 'lambda')
+        param_range: Rango de valores a probar
+        target_W_max: Tiempo máximo objetivo (3 min por defecto)
+        num_replicas: Número de réplicas por evaluación
+        output_folder: Carpeta de salida
+    """
+    import os
+    import pandas as pd
+    import numpy as np
+    
+    print(f"\nAnálisis de sensibilidad para configuración: {config_name}")
+    print(f"Parámetro variado: {param_name}")
+    print(f"W base: {base_stats['W_mean']:.2f} min")
+    
+    os.makedirs(output_folder, exist_ok=True)
+    
+    results = []
+    breaking_point = None
+    
+    # Itera sobre el rango de valores del parámetro
+    for param_value in param_range:
+        # Copia la configuración
+        temp_config = copy.deepcopy(config)
+        
+        # Modifica el parámetro específico
+        if param_name == 'prob_chicken':
+            temp_config['probabilities']['chicken'] = param_value
+        elif param_name == 'prob_desserts':
+            temp_config['probabilities']['desserts'] = param_value
+        elif param_name == 'prob_drinks':
+            temp_config['probabilities']['drinks'] = param_value
+        elif param_name == 'lambda':
+            temp_config['arrivals']['lambda'] = param_value
+        elif param_name == 'cashier_time':
+            temp_config['service_times']['cashiers']['mean'] = param_value
+        
+        # Ejecuta réplicas
+        metrics_list = run_replicas_parallel(temp_config, num_replicas)
+        agg = aggregate_replica_metrics(metrics_list)
+        
+        # Registra resultados
+        result = {
+            param_name: param_value,
+            'W_mean': agg['W_mean'],
+            'W_std': agg['W_std'],
+            'W_ci_lower': agg['W_ci_95'][0],
+            'W_ci_upper': agg['W_ci_95'][1],
+            'W_variance': agg['W_variance'],
+            'cumple_objetivo': agg['W_mean'] <= target_W_max
+        }
+        results.append(result)
+        
+        # Detecta punto de quiebre
+        if breaking_point is None and agg['W_mean'] > target_W_max:
+            breaking_point = param_value
+    
+    # Convierte a DataFrame
+    df_results = pd.DataFrame(results)
+    
+    # Guarda resultados
+    filename = f'{output_folder}/sensitivity_{config_name}_{param_name}.csv'
+    df_results.to_csv(filename, index=False)
+    
+    # Genera gráfico
+    plot_sensitivity_configuration(df_results, param_name, config_name, 
+                                   target_W_max, base_stats['W_mean'],
+                                   f'{output_folder}/sensitivity_{config_name}_{param_name}.pdf')
+    
+    # Análisis de margen
+    print(f"\nResultados del análisis:")
+    print(f"  - W base: {base_stats['W_mean']:.2f} min")
+    print(f"  - Margen disponible: {target_W_max - base_stats['W_mean']:.2f} min")
+    
+    if breaking_point is not None:
+        print(f"  - Punto de quiebre: {param_name} ≈ {breaking_point:.2f}")
+        base_value = get_base_value(config, param_name)
+        print(f"  - Margen de cambio: {abs(breaking_point - base_value):.2f} "
+              f"({abs(breaking_point - base_value)/base_value*100:.1f}%)")
+    else:
+        print(f"  - La configuración mantiene W ≤ {target_W_max}min en todo el rango probado")
+    
+    return df_results, breaking_point
+
+
+def get_base_value(config, param_name):
+    """Obtiene el valor base de un parámetro de configuración"""
+    if param_name == 'prob_chicken':
+        return config['probabilities']['chicken']
+    elif param_name == 'prob_desserts':
+        return config['probabilities']['desserts']
+    elif param_name == 'prob_drinks':
+        return config['probabilities']['drinks']
+    elif param_name == 'lambda':
+        return config['arrivals']['lambda']
+    elif param_name == 'cashier_time':
+        return config['service_times']['cashiers']['mean']
+    return None
+
+
+def plot_sensitivity_configuration(df, param_name, config_name, 
+                                   target_line, base_value, output_file):
+    """Genera gráfico de sensibilidad para una configuración específica"""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Línea de W promedio
+    ax.plot(df[param_name], df['W_mean'], 'o-', linewidth=2, markersize=8,
+            color='steelblue', label='W promedio')
+    
+    # Intervalo de confianza
+    ax.fill_between(df[param_name], df['W_ci_lower'], df['W_ci_upper'],
+                    alpha=0.3, color='steelblue', label='IC 95%')
+    
+    # Línea objetivo
+    ax.axhline(y=target_line, color='red', linestyle='--', 
+               linewidth=2, label=f'Objetivo: {target_line} min')
+    
+    # Línea base
+    ax.axhline(y=base_value, color='green', linestyle=':', 
+               linewidth=1.5, label=f'Base: {base_value:.2f} min')
+    
+    # Marca punto de quiebre
+    exceeds_target = df[df['W_mean'] > target_line]
+    if not exceeds_target.empty:
+        first_exceed = exceeds_target.iloc[0]
+        ax.plot(first_exceed[param_name], first_exceed['W_mean'], 'ro', 
+                markersize=10, label='Punto de quiebre')
+    
+    ax.set_xlabel(f'Valor de {param_name}', fontsize=12)
+    ax.set_ylabel('Tiempo en Sistema W (min)', fontsize=12)
+    ax.set_title(f'Sensibilidad de {config_name}\nVariando {param_name}', 
+                 fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=10, loc='best')
+    
+    plt.tight_layout()
+    plt.savefig(output_file, format='pdf', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"  ✓ Gráfico guardado: {output_file}")
+
+
 
 def sensitivity_analysis_chicken_prob(base_config, prob_values, num_replicas,
                                       output_folder='results/sensitivity'):
