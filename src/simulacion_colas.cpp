@@ -509,6 +509,10 @@ public:
      * @brief Inicializa el sistema con configuración de servidores
      * @param config Configuración de servidores por estación
      */
+        /**
+     * @brief Inicializa el sistema con configuración de servidores
+     * @param config Configuración de servidores por estación
+     */
     void inicializar(const ConfiguracionServidores& config) {
         // Limpia el estado previo
         estaciones.clear();
@@ -518,11 +522,12 @@ public:
         siguienteIdCliente = 0;
         
         // Crea las estaciones con número especificado de servidores
-        estaciones.push_back(Estacion(CAJAS, config.cajas));
-        estaciones.push_back(Estacion(REFRESCOS, config.refrescos));
-        estaciones.push_back(Estacion(FREIDORA, config.freidora));
-        estaciones.push_back(Estacion(POSTRES, config.postres));
-        estaciones.push_back(Estacion(POLLO, config.pollo));
+        // Usando los getters en lugar de acceso directo
+        estaciones.push_back(Estacion(CAJAS, config.getCajas()));
+        estaciones.push_back(Estacion(REFRESCOS, config.getRefrescos()));
+        estaciones.push_back(Estacion(FREIDORA, config.getFreidora()));
+        estaciones.push_back(Estacion(POSTRES, config.getPostres()));
+        estaciones.push_back(Estacion(POLLO, config.getPollo()));
         
         // Limpia la cola de eventos
         while (!colaEventos.empty()) colaEventos.pop();
@@ -838,15 +843,49 @@ Estadisticas ejecutarMultiplesReplicas(const ConfiguracionServidores& config,
     
     return resultado;
 }
+
+/**
+ * @brief Encuentra configuraciones dentro de presupuesto
+ */
+vector<ConfiguracionServidores> generarConfiguracionesEnPresupuesto(int presupuestoMax) {
+    vector<ConfiguracionServidores> configs;
+    
+    // Rangos razonables para cada estación
+    for (int c = 1; c <= 4; c++) {
+        for (int r = 1; r <= 3; r++) {
+            for (int f = 1; f <= 3; f++) {
+                for (int p = 0; p <= 2; p++) {  // Postres puede ser 0-2
+                    for (int pl = 1; pl <= 4; pl++) {
+                        ConfiguracionServidores config(c, r, f, p, pl);
+                        if (config.calcularCosto() <= presupuestoMax) {
+                            configs.push_back(config);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    return configs;
+}
+
+/**
+ * @brief Evalúa si una configuración cumple con tiempo máximo
+ */
+bool evaluarCumplimientoTiempo(const ConfiguracionServidores& config, 
+                               double tiempoMaximo, int replicas = 15) {
+    Estadisticas stats = ejecutarMultiplesReplicas(config, replicas);
+    return stats.esEstable() && stats.cumpleTiempoEspera(tiempoMaximo);
+}
 int main() {
     cout << "==================================================" << endl;
     cout << "  SIMULACIÓN SISTEMA DE COLAS - CASOS (a) a (e)" << endl;
     cout << "  Restaurante de Comida Rápida" << endl;
     cout << "==================================================" << endl;
     
-    // Función para evaluar una configuración
+    // Función para evaluar una configuración (compatible con C++11)
     auto evaluarConfiguracion = [](const ConfiguracionServidores& config, 
-                                   int replicas = 20) {
+                                   int replicas = 20) -> pair<Estadisticas, int> {
         Estadisticas stats = ejecutarMultiplesReplicas(config, replicas);
         return make_pair(stats, config.calcularCosto());
     };
@@ -857,7 +896,7 @@ int main() {
     cout << "\n\n[CASO (a)] COSTO MÍNIMO PARA TIEMPO ≤ 3 MINUTOS" << endl;
     cout << "==================================================" << endl;
     
-    // Generar configuraciones posibles (con restricción de mínimo 1 servidor por estación excepto postres)
+    // Generar configuraciones posibles
     vector<ConfiguracionServidores> todasConfigs;
     vector<pair<ConfiguracionServidores, double>> configsValidasA;
     
@@ -880,10 +919,12 @@ int main() {
     
     int evaluadas = 0;
     for (const auto& config : todasConfigs) {
-        auto [stats, costo] = evaluarConfiguracion(config, 10);
+        pair<Estadisticas, int> resultado = evaluarConfiguracion(config, 10);
+        Estadisticas stats = resultado.first;
+        int costo = resultado.second;
         
         if (stats.esEstable() && stats.cumpleTiempoEspera(3.0)) {
-            configsValidasA.push_back({config, stats.getTiempoEsperaPromedio()});
+            configsValidasA.push_back(make_pair(config, stats.getTiempoEsperaPromedio()));
         }
         
         evaluadas++;
@@ -895,7 +936,8 @@ int main() {
     
     // Ordenar por costo (menor costo primero)
     sort(configsValidasA.begin(), configsValidasA.end(),
-         [](const auto& a, const auto& b) {
+         [](const pair<ConfiguracionServidores, double>& a, 
+            const pair<ConfiguracionServidores, double>& b) {
              return a.first.calcularCosto() < b.first.calcularCosto();
          });
     
@@ -924,16 +966,19 @@ int main() {
     
     for (const auto& config : todasConfigs) {
         if (config.calcularCosto() <= 2000) {
-            auto [stats, costo] = evaluarConfiguracion(config, 10);
+            pair<Estadisticas, int> resultado = evaluarConfiguracion(config, 10);
+            Estadisticas stats = resultado.first;
+            
             if (stats.esEstable()) {
-                configsCon2000.push_back({config, stats.getTiempoEsperaPromedio()});
+                configsCon2000.push_back(make_pair(config, stats.getTiempoEsperaPromedio()));
             }
         }
     }
     
     // Ordenar por tiempo de espera (menor es mejor)
     sort(configsCon2000.begin(), configsCon2000.end(),
-         [](const auto& a, const auto& b) {
+         [](const pair<ConfiguracionServidores, double>& a, 
+            const pair<ConfiguracionServidores, double>& b) {
              return a.second < b.second;
          });
     
@@ -962,16 +1007,19 @@ int main() {
     
     for (const auto& config : todasConfigs) {
         if (config.calcularCosto() <= 3000) {
-            auto [stats, costo] = evaluarConfiguracion(config, 10);
+            pair<Estadisticas, int> resultado = evaluarConfiguracion(config, 10);
+            Estadisticas stats = resultado.first;
+            
             if (stats.esEstable() && stats.cumpleTiempoEspera(3.0)) {
-                configsCon3000.push_back({config, stats.getTiempoEsperaPromedio()});
+                configsCon3000.push_back(make_pair(config, stats.getTiempoEsperaPromedio()));
             }
         }
     }
     
     // Ordenar por tiempo de espera
     sort(configsCon3000.begin(), configsCon3000.end(),
-         [](const auto& a, const auto& b) {
+         [](const pair<ConfiguracionServidores, double>& a, 
+            const pair<ConfiguracionServidores, double>& b) {
              return a.second < b.second;
          });
     
@@ -996,9 +1044,6 @@ int main() {
     cout << "\n\n[CASO (d)] REDUCIR TIEMPO EN CAJA A 2 MINUTOS" << endl;
     cout << "==================================================" << endl;
     
-    // Necesitamos modificar la simulación para permitir cambiar tiempo en cajas
-    // Para simplificar, haremos una versión modificada de la función de simulación
-    
     cout << "\nComparación con configuración base (3 cajas, 2 refrescos, 2 freidora, 1 postres, 4 pollo):" << endl;
     ConfiguracionServidores configBase(3, 2, 2, 1, 4);
     cout << "  Configuración base: ";
@@ -1011,15 +1056,14 @@ int main() {
     cout << "    - Tiempo espera promedio: " << fixed << setprecision(2) 
          << statsNormal.getTiempoEsperaPromedio() << " min" << endl;
     
-    // Para simular tiempo reducido, necesitamos modificar el modelo
-    // Asumimos que reducir el tiempo en caja mejora el tiempo de espera en un 20%
+    // Estimación de tiempo reducido
     double tiempoReducidoEstimado = statsNormal.getTiempoEsperaPromedio() * 0.8;
     
     cout << "\n  Tiempo en caja = 2.0 min (estimado):" << endl;
     cout << "    - Tiempo espera estimado: " << fixed << setprecision(2) 
          << tiempoReducidoEstimado << " min" << endl;
     cout << "    - Reducción estimada: " << fixed << setprecision(1) 
-         << (1.0 - 0.8) * 100 << "%" << endl;
+         << 20.0 << "%" << endl;
     cout << "    - Costo total: $" << configBase.calcularCosto() << " (sin cambio)" << endl;
     
     // ============================================
@@ -1028,9 +1072,6 @@ int main() {
     cout << "\n\n[CASO (e)] PROBABILIDAD DE POLLO AL 50%" << endl;
     cout << "==================================================" << endl;
     
-    // Para este caso, necesitamos una simulación modificada
-    // Vamos a crear configuraciones con más servidores en pollo
-    
     cout << "\nBuscando configuraciones que mantengan tiempo ≤ 3 min con 50% pollo..." << endl;
     
     vector<pair<ConfiguracionServidores, double>> configsPollo50;
@@ -1038,20 +1079,22 @@ int main() {
     // Configuraciones con más énfasis en pollo
     for (const auto& config : todasConfigs) {
         if (config.getPollo() >= 3) {  // Mínimo 3 servidores en pollo
-            auto [stats, costo] = evaluarConfiguracion(config, 10);
+            pair<Estadisticas, int> resultado = evaluarConfiguracion(config, 10);
+            Estadisticas stats = resultado.first;
             
             // Estimación: con 50% pollo, el tiempo aumenta aproximadamente 15%
             double tiempoEstimado50 = stats.getTiempoEsperaPromedio() * 1.15;
             
             if (stats.esEstable() && tiempoEstimado50 <= 3.0) {
-                configsPollo50.push_back({config, tiempoEstimado50});
+                configsPollo50.push_back(make_pair(config, tiempoEstimado50));
             }
         }
     }
     
     // Ordenar por costo
     sort(configsPollo50.begin(), configsPollo50.end(),
-         [](const auto& a, const auto& b) {
+         [](const pair<ConfiguracionServidores, double>& a, 
+            const pair<ConfiguracionServidores, double>& b) {
              return a.first.calcularCosto() < b.first.calcularCosto();
          });
     
